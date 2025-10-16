@@ -1,0 +1,72 @@
+import os
+from pdf2image import convert_from_path
+import fitz  # PyMuPDF
+from paddleocr import PPStructure, PaddleOCR
+import numpy as np
+import cv2
+from bs4 import BeautifulSoup
+from PIL import Image
+
+# PDF dosyalarının yolu
+pdf_folder = "./"
+pdf_files = [f for f in os.listdir(pdf_folder) if f.lower().endswith(".pdf")]
+
+# Çıktı klasörü
+output_folder = "./output_texts"
+os.makedirs(output_folder, exist_ok=True)
+
+print("Initializing OCR model...")
+
+# ==============================
+# OCR MODELLERİNİ YÜKLEME
+# ==============================
+
+# 1️⃣ Düzen analizi (layout)
+structure_predictor = PPStructure(show_log=False, lang='en', ocr=False)
+
+# 2️⃣ Türkçe OCR
+# (Docker'da indirdiğimiz Türkçe modelin yolu: /root/.paddleocr/rec/tr_PP-OCRv3_rec_infer)
+ocr_engine = PaddleOCR(
+    use_angle_cls=True,
+    lang='tr',
+    show_log=False
+)
+# ==============================
+
+for pdf_file in pdf_files:
+    pdf_path = os.path.join(pdf_folder, pdf_file)
+    print(f"Processing: {pdf_file}")
+
+    pages = convert_from_path(pdf_path, dpi=300)
+    all_text = []
+
+    for page_num, page_image in enumerate(pages, start=1):
+        try:
+            img_np = np.array(page_image)
+            img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
+            result = structure_predictor(img_bgr)
+        except Exception as e:
+            print(f"Error processing page {page_num}: {e}")
+            continue
+
+        for region in result:
+            if region['type'] == 'table':
+                html_content = region['res'].get('html', '')
+                if html_content:
+                    soup = BeautifulSoup(html_content, 'html.parser')
+                    for td in soup.find_all('td'):
+                        all_text.append(td.get_text(strip=True))
+            elif region['type'] == 'text':
+                box = region['bbox']
+                cropped_img = img_bgr[int(box[1]):int(box[3]), int(box[0]):int(box[2])]
+                ocr_result = ocr_engine.ocr(cropped_img, cls=True)
+                if ocr_result and ocr_result[0]:
+                    all_text.extend([line[1][0] for line in ocr_result[0]])
+
+    output_path = os.path.join(output_folder, pdf_file.replace(".pdf", ".txt"))
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(all_text))
+
+    print(f"Finished: {pdf_file}, saved to {output_path}")
+
+print("All PDFs processed ✅")
